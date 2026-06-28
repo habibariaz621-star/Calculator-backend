@@ -1,19 +1,41 @@
 import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import connectDB from './config/db.js'
 import authRoutes from './routes/authRoutes.js'
 import calculatorRoutes from './routes/calculatorRoutes.js'
 
-dotenv.config()
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 connectDB()
 
 const app = express()
 
+const defaultOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const envOrigins = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.split(',').map((origin) => origin.trim())
+  : []
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])]
+
+const isLocalDevOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)
+
 app.use(
   cors({
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true)
+      }
+
+      if (process.env.NODE_ENV !== 'production' && isLocalDevOrigin(origin)) {
+        return callback(null, true)
+      }
+
+      callback(new Error(`CORS blocked for origin: ${origin}`))
+    },
     credentials: true,
   }),
 )

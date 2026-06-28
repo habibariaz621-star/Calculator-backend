@@ -2,7 +2,10 @@ import { createContext, useContext, useMemo, useState } from 'react'
 
 const AUTH_KEY = 'calc-auth-user'
 const TOKEN_KEY = 'calc-auth-token'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+// In dev, use relative URLs so Vite proxies /api to the backend (avoids CORS).
+const API_URL =
+  import.meta.env.VITE_API_URL ??
+  (import.meta.env.DEV ? '' : 'http://localhost:5000')
 
 const AuthContext = createContext(null)
 

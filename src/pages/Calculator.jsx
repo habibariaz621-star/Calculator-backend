@@ -1,43 +1,40 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { create, all } from 'mathjs'
 import { useAuth } from '../context/AuthContext'
 
 const math = create(all, {})
-const MAX_LENGTH = 48
 const MAX_HISTORY = 15
 const HISTORY_KEY = 'scientific-calculator-history'
 
-function loadHistory() {
-  try {
-    const saved = localStorage.getItem(HISTORY_KEY)
-    return saved ? JSON.parse(saved) : []
-  } catch {
-    return []
-  }
+const OP_SYMBOLS = {
+  '+': '+',
+  '-': '−',
+  '*': '×',
+  '/': '÷',
 }
 
 const BUTTONS = [
-  { label: 'sin', value: 'sin(', variant: 'sci' },
-  { label: 'cos', value: 'cos(', variant: 'sci' },
-  { label: 'tan', value: 'tan(', variant: 'sci' },
-  { label: '√', value: 'sqrt(', variant: 'sci' },
-  { label: 'log', value: 'log(', variant: 'sci' },
+  { label: 'sin', action: 'sin', variant: 'sci' },
+  { label: 'cos', action: 'cos', variant: 'sci' },
+  { label: 'tan', action: 'tan', variant: 'sci' },
+  { label: '√', action: 'sqrt', variant: 'sci' },
+  { label: 'log', action: 'log', variant: 'sci' },
   { label: 'C', action: 'clear', variant: 'danger' },
   { label: '⌫', action: 'backspace', variant: 'muted' },
-  { label: '÷', value: '/', variant: 'op' },
+  { label: '÷', action: 'operator', value: '/', variant: 'op' },
   { label: '7', value: '7', variant: 'num' },
   { label: '8', value: '8', variant: 'num' },
   { label: '9', value: '9', variant: 'num' },
-  { label: '×', value: '*', variant: 'op' },
+  { label: '×', action: 'operator', value: '*', variant: 'op' },
   { label: '4', value: '4', variant: 'num' },
   { label: '5', value: '5', variant: 'num' },
   { label: '6', value: '6', variant: 'num' },
-  { label: '−', value: '-', variant: 'op' },
+  { label: '−', action: 'operator', value: '-', variant: 'op' },
   { label: '1', value: '1', variant: 'num' },
   { label: '2', value: '2', variant: 'num' },
   { label: '3', value: '3', variant: 'num' },
-  { label: '+', value: '+', variant: 'op' },
+  { label: '+', action: 'operator', value: '+', variant: 'op' },
   { label: '0', value: '0', variant: 'num', wide: true },
   { label: '.', value: '.', variant: 'num' },
   { label: '=', action: 'equals', variant: 'equal' },
@@ -53,6 +50,15 @@ const VARIANT_STYLES = {
     'bg-gradient-to-br from-violet-500 to-indigo-600 text-white hover:from-violet-600 hover:to-indigo-700 shadow-lg shadow-violet-500/30',
 }
 
+function loadHistory() {
+  try {
+    const saved = localStorage.getItem(HISTORY_KEY)
+    return saved ? JSON.parse(saved) : []
+  } catch {
+    return []
+  }
+}
+
 function formatResult(value) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return 'Error'
@@ -64,98 +70,221 @@ function formatResult(value) {
   return String(value)
 }
 
-function endsWithOperator(expression) {
-  return /[+\-*/^]$/.test(expression.trim())
+function parseDisplay(value) {
+  if (value === 'Error' || value === '' || value === '-') return null
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
 }
 
-function isPlainNumber(value) {
-  return /^-?\d+\.?\d*$/.test(value) || /^-?\d*\.\d+$/.test(value)
+function getTrigFns(useDegrees) {
+  if (useDegrees) {
+    const deg = (fn) => (x) => fn(math.unit(x, 'deg'))
+    return { sin: deg(math.sin), cos: deg(math.cos), tan: deg(math.tan) }
+  }
+  return { sin: math.sin, cos: math.cos, tan: math.tan }
 }
 
-function canAppendValue(expression, value) {
-  if (expression === 'Error' && !/^[0-9]$/.test(value) && value !== '-' && !value.endsWith('(')) {
-    return false
-  }
-  if (expression.length >= MAX_LENGTH) return false
-  if (/^[0-9]$/.test(value)) return true
-
-  if (value === '.') {
-    if (endsWithOperator(expression)) return false
-    const lastSegment = expression.split(/[+\-*/^()]/).pop() ?? expression
-    return !lastSegment.includes('.')
-  }
-
-  if (/^[+\-*/]$/.test(value)) {
-    if (!expression || expression === 'Error') return value === '-'
-    if (endsWithOperator(expression)) return false
-    return true
-  }
-
-  if (value.endsWith('(')) {
-    if (!expression || expression === '0' || expression === 'Error' || endsWithOperator(expression)) {
-      return true
-    }
-    return false
-  }
-
-  return true
-}
-
-function appendValue(expression, value) {
-  if (!canAppendValue(expression, value)) return expression
-
-  if (expression === 'Error') {
-    if (/^[0-9]$/.test(value)) return value
-    if (value === '-' || value.endsWith('(')) return value
-    return expression
-  }
-
-  if (isPlainNumber(expression) && /^[0-9]$/.test(value)) return value
-  if (isPlainNumber(expression) && value.endsWith('(')) return value
-  if (expression === '0' && /^[0-9]$/.test(value)) return value
-  if (expression === '0' && value === '.') return '0.'
-  if (expression === '0' && (value.endsWith('(') || value === '-')) return value
-
-  return expression + value
-}
-
-function evaluateExpression(expression, useDegrees) {
-  if (!expression || expression === 'Error') return null
-
-  const scope = useDegrees
-    ? {
-        sin: (x) => math.sin(math.unit(x, 'deg')),
-        cos: (x) => math.cos(math.unit(x, 'deg')),
-        tan: (x) => math.tan(math.unit(x, 'deg')),
-        log: (x) => math.log10(x),
-        sqrt: math.sqrt,
-      }
-    : {
-        sin: math.sin,
-        cos: math.cos,
-        tan: math.tan,
-        log: math.log10,
-        sqrt: math.sqrt,
-      }
-
+function computeBinary(a, b, operator) {
   try {
-    const result = math.evaluate(expression, scope)
-    if (typeof result === 'object' && result?.re !== undefined) {
-      return formatResult(result.re)
+    switch (operator) {
+      case '+':
+        return formatResult(a + b)
+      case '-':
+        return formatResult(a - b)
+      case '*':
+        return formatResult(a * b)
+      case '/':
+        if (b === 0) return 'Error'
+        return formatResult(a / b)
+      default:
+        return 'Error'
     }
-    return formatResult(result)
   } catch {
     return 'Error'
+  }
+}
+
+function computeUnary(value, fn, useDegrees) {
+  try {
+    const trig = getTrigFns(useDegrees)
+    switch (fn) {
+      case 'sin':
+        return formatResult(trig.sin(value))
+      case 'cos':
+        return formatResult(trig.cos(value))
+      case 'tan':
+        return formatResult(trig.tan(value))
+      case 'sqrt':
+        if (value < 0) return 'Error'
+        return formatResult(math.sqrt(value))
+      case 'log':
+        if (value <= 0) return 'Error'
+        return formatResult(math.log10(value))
+      default:
+        return 'Error'
+    }
+  } catch {
+    return 'Error'
+  }
+}
+
+function appendDigit(display, digit, freshEntry) {
+  if (display === 'Error') {
+    display = '0'
+    freshEntry = true
+  }
+
+  if (freshEntry) {
+    if (digit === '.') return { display: '0.', freshEntry: false }
+    return { display: digit, freshEntry: false }
+  }
+
+  if (digit === '.') {
+    if (display.includes('.')) return { display, freshEntry }
+    return { display: `${display}.`, freshEntry }
+  }
+
+  if (display === '0') return { display: digit, freshEntry }
+
+  if (display.replace('-', '').length >= 15) return { display, freshEntry }
+
+  return { display: display + digit, freshEntry }
+}
+
+function addHistoryEntry(history, expression, result) {
+  const entry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    expression,
+    result,
+  }
+  return [entry, ...history].slice(0, MAX_HISTORY)
+}
+
+const INITIAL_STATE = {
+  display: '0',
+  operand1: null,
+  operator: null,
+  freshEntry: false,
+  preview: '',
+  history: [],
+}
+
+function calculatorReducer(state, action) {
+  switch (action.type) {
+    case 'digit': {
+      const next = appendDigit(state.display, action.digit, state.freshEntry)
+      return { ...state, display: next.display, freshEntry: next.freshEntry }
+    }
+
+    case 'operator': {
+      const op = action.operator
+      const currentNum = parseDisplay(state.display)
+      if (currentNum === null) return state
+
+      if (state.operand1 !== null && state.operator && !state.freshEntry) {
+        const result = computeBinary(parseDisplay(state.operand1), currentNum, state.operator)
+        return {
+          ...state,
+          display: result,
+          operand1: result,
+          operator: op,
+          freshEntry: true,
+          preview: `${result} ${OP_SYMBOLS[op]} `,
+        }
+      }
+
+      return {
+        ...state,
+        operand1: state.display,
+        operator: op,
+        freshEntry: true,
+        preview: `${state.display} ${OP_SYMBOLS[op]} `,
+      }
+    }
+
+    case 'equals': {
+      if (state.operand1 === null || !state.operator) return state
+      const numA = parseDisplay(state.operand1)
+      const numB = parseDisplay(state.display)
+      if (numA === null || numB === null) return state
+
+      const result = computeBinary(numA, numB, state.operator)
+      const expression = `${state.operand1} ${OP_SYMBOLS[state.operator]} ${state.display}`
+
+      return {
+        ...state,
+        display: result,
+        preview: `${expression} =`,
+        operand1: null,
+        operator: null,
+        freshEntry: true,
+        history: result !== 'Error' ? addHistoryEntry(state.history, expression, result) : state.history,
+      }
+    }
+
+    case 'unary': {
+      const currentNum = parseDisplay(state.display)
+      if (currentNum === null) return state
+
+      const result = computeUnary(currentNum, action.fn, action.useDegrees)
+      const label = action.fn === 'sqrt' ? '√' : action.fn
+      const expression = `${label}(${state.display})`
+
+      return {
+        ...state,
+        display: result,
+        operand1: null,
+        operator: null,
+        freshEntry: true,
+        preview: `${expression} =`,
+        history: result !== 'Error' ? addHistoryEntry(state.history, expression, result) : state.history,
+      }
+    }
+
+    case 'clear':
+      return { ...state, display: '0', operand1: null, operator: null, freshEntry: false, preview: '' }
+
+    case 'backspace': {
+      if (state.display === 'Error') return { ...state, display: '0', freshEntry: false }
+      if (state.freshEntry) return state
+
+      const current = state.display
+      const next =
+        current.length <= 1 || (current.length === 2 && current.startsWith('-'))
+          ? '0'
+          : current.slice(0, -1)
+      return { ...state, display: next }
+    }
+
+    case 'selectHistory':
+      return {
+        ...state,
+        display: action.entry.result,
+        operand1: null,
+        operator: null,
+        freshEntry: true,
+        preview: `${action.entry.expression} =`,
+      }
+
+    case 'clearHistory':
+      return { ...state, history: [] }
+
+    default:
+      return state
   }
 }
 
 export default function Calculator() {
   const { user, logout, verifyCalculatorAccess } = useAuth()
   const navigate = useNavigate()
-  const [expression, setExpression] = useState('0')
-  const [preview, setPreview] = useState('')
+
+  const [state, dispatch] = useReducer(calculatorReducer, INITIAL_STATE, (initial) => ({
+    ...initial,
+    history: loadHistory(),
+  }))
+  const { display, operand1, operator, freshEntry, preview, history } = state
+
   const [useDegrees, setUseDegrees] = useState(true)
-  const [history, setHistory] = useState(loadHistory)
   const [accessVerified, setAccessVerified] = useState(false)
 
   useEffect(() => {
@@ -172,59 +301,32 @@ export default function Calculator() {
   }, [history])
 
   const livePreview = useMemo(() => {
-    if (!expression || expression === 'Error' || endsWithOperator(expression)) return ''
-    const result = evaluateExpression(expression, useDegrees)
-    return result && result !== 'Error' ? result : ''
-  }, [expression, useDegrees])
+    if (!operand1 || !operator || freshEntry) return ''
+    const numA = parseDisplay(operand1)
+    const numB = parseDisplay(display)
+    if (numA === null || numB === null) return ''
+    const result = computeBinary(numA, numB, operator)
+    return result !== 'Error' ? result : ''
+  }, [operand1, operator, display, freshEntry])
 
-  const append = useCallback((value) => {
-    setPreview('')
-    setExpression((current) => appendValue(current === 'Error' ? '0' : current, value))
-  }, [])
+  const append = useCallback((digit) => dispatch({ type: 'digit', digit }), [])
 
-  const handleClear = useCallback(() => {
-    setExpression('0')
-    setPreview('')
-  }, [])
+  const handleClear = useCallback(() => dispatch({ type: 'clear' }), [])
 
-  const handleBackspace = useCallback(() => {
-    setExpression((current) => {
-      if (current === 'Error') return '0'
-      if (current.length <= 1) return '0'
-      return current.slice(0, -1)
-    })
-  }, [])
+  const handleBackspace = useCallback(() => dispatch({ type: 'backspace' }), [])
 
-  const handleEquals = useCallback(() => {
-    setExpression((current) => {
-      if (!current || current === 'Error' || endsWithOperator(current)) return current
-      const result = evaluateExpression(current, useDegrees)
-      if (result === null) return current
+  const handleOperator = useCallback((op) => dispatch({ type: 'operator', operator: op }), [])
 
-      if (result !== 'Error') {
-        setHistory((entries) =>
-          [
-            {
-              id: `${Date.now()}-${entries.length}`,
-              expression: current,
-              result,
-            },
-            ...entries,
-          ].slice(0, MAX_HISTORY),
-        )
-      }
+  const handleUnary = useCallback(
+    (fn) => dispatch({ type: 'unary', fn, useDegrees }),
+    [useDegrees],
+  )
 
-      setPreview(current)
-      return result
-    })
-  }, [useDegrees])
+  const handleEquals = useCallback(() => dispatch({ type: 'equals' }), [])
 
-  const handleHistorySelect = useCallback((entry) => {
-    setPreview('')
-    setExpression(entry.expression)
-  }, [])
+  const handleHistorySelect = useCallback((entry) => dispatch({ type: 'selectHistory', entry }), [])
 
-  const handleClearHistory = useCallback(() => setHistory([]), [])
+  const handleClearHistory = useCallback(() => dispatch({ type: 'clearHistory' }), [])
 
   const handleLogout = () => {
     logout()
@@ -236,9 +338,15 @@ export default function Calculator() {
       if (button.action === 'clear') handleClear()
       else if (button.action === 'backspace') handleBackspace()
       else if (button.action === 'equals') handleEquals()
+      else if (button.action === 'operator' && button.value) handleOperator(button.value)
+      else if (button.action === 'sin') handleUnary('sin')
+      else if (button.action === 'cos') handleUnary('cos')
+      else if (button.action === 'tan') handleUnary('tan')
+      else if (button.action === 'sqrt') handleUnary('sqrt')
+      else if (button.action === 'log') handleUnary('log')
       else if (button.value) append(button.value)
     },
-    [append, handleBackspace, handleClear, handleEquals],
+    [append, handleBackspace, handleClear, handleEquals, handleOperator, handleUnary],
   )
 
   useEffect(() => {
@@ -257,9 +365,27 @@ export default function Calculator() {
         return
       }
 
-      if (key === '+' || key === '-' || key === '*' || key === '/') {
+      if (key === '+') {
         event.preventDefault()
-        append(key)
+        handleOperator('+')
+        return
+      }
+
+      if (key === '-') {
+        event.preventDefault()
+        handleOperator('-')
+        return
+      }
+
+      if (key === '*') {
+        event.preventDefault()
+        handleOperator('*')
+        return
+      }
+
+      if (key === '/') {
+        event.preventDefault()
+        handleOperator('/')
         return
       }
 
@@ -283,7 +409,7 @@ export default function Calculator() {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [append, handleBackspace, handleClear, handleEquals])
+  }, [append, handleBackspace, handleClear, handleEquals, handleOperator])
 
   const buttonClass =
     'flex items-center justify-center rounded-2xl text-base font-semibold transition-all duration-200 hover:-translate-y-0.5 active:scale-95 sm:text-lg h-14 sm:h-16'
@@ -337,13 +463,13 @@ export default function Calculator() {
 
           <div className="mb-5 overflow-hidden rounded-2xl border border-white/20 bg-slate-900/80 px-4 py-4 shadow-inner backdrop-blur-md dark:bg-black/50 sm:px-5 sm:py-5">
             {preview && (
-              <p className="truncate text-right text-xs text-slate-400 sm:text-sm">{preview} =</p>
+              <p className="truncate text-right text-xs text-slate-400 sm:text-sm">{preview}</p>
             )}
-            {livePreview && livePreview !== expression && !preview && (
+            {livePreview && !preview.endsWith('=') && (
               <p className="truncate text-right text-xs text-cyan-300/80 sm:text-sm">= {livePreview}</p>
             )}
             <p className="truncate text-right font-mono text-3xl font-semibold text-white sm:text-4xl">
-              {expression}
+              {display}
             </p>
           </div>
 
